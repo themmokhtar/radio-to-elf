@@ -60,13 +60,15 @@ class Ext4Unpacker(Unpacker):
             modem_ext4_reader = modem_file.open()
             modem_file_size = len(modem_ext4_reader)
 
-            logging.debug(f"Extracting modem file at \"{modem_file_path}\" of size {modem_file_size} bytes")
+            logging.debug(
+                f"Extracting modem file at \"{modem_file_path}\" of size {modem_file_size} bytes")
 
             modem_io = BytesIO()
 
             written = 0
             while written < modem_file_size:
-                chunk = modem_ext4_reader.read(self.READ_GRANULARITY)
+                chunk = modem_ext4_reader.read(
+                    min(self.READ_GRANULARITY, modem_file_size - written))
                 modem_io.write(chunk)
                 written += len(chunk)
 
