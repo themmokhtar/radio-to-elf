@@ -1,24 +1,15 @@
+from __future__ import annotations
+
 import re
 import struct
 import logging
 import string
+import zlib
 
 from dataclasses import dataclass
 from typing import ClassVar
 
-
-class BadFileError(Exception):
-    def __init__(self, message):
-        super(BadFileError, self).__init__(message)
-
-
-class FileParsingError(Exception):
-    def __init__(self, message):
-        super(BadFileError, self).__init__(message)
-
-# All the patterns specified in this class are courtesy of Grant-H and his team
-# Many many thanks to their amazing team for making their research public
-# https://github.com/grant-h/ShannonBaseband.git
+from exceptions import BadFileError, FileParsingError
 
 
 def hexdump(data: bytes, line_size: int = 16) -> None:
@@ -39,6 +30,9 @@ def hexdump(data: bytes, line_size: int = 16) -> None:
         offset += line_size
 
 
+# All the patterns specified in this class are courtesy of Grant-H and his team
+# Many many thanks to their amazing team for making their research public
+# https://github.com/grant-h/ShannonBaseband.git
 class RegexDB:
     SOC_VERSION = re.compile(
         # SoC identifier
@@ -103,12 +97,27 @@ class TocHeaderInfo:
     entry_id: int
 
     @staticmethod
-    def from_bytes(data):
+    def from_bytes(data: bytes) -> TocHeaderInfo:
         header = struct.unpack("<12s5I", data)
         return TocHeaderInfo(header[0].rstrip(b'\x00').decode(), header[1], header[2], header[3], header[4], header[5])
 
-    def slice_section_data(self, data):
+    def slice_section_data(self, data: bytes) -> bytes:
         return data[self.file_offset:self.file_offset + self.size]
+
+    def verify_data_checksum(self, data: bytes) -> None:
+        if self.crc == 0:
+            logging.debug(
+                f"Skipped CRC checksum check for {self.name} section due to unspecified checksum")
+            return
+
+        section_data = self.slice_section_data(data)
+        section_crc = zlib.crc32(section_data)
+
+        if section_crc != self.crc:
+            raise FileParsingError(
+                f"Failed to parse TOC header with invalid {self.name} section data CRC checksum (expected 0x{self.crc:08x}, got 0x{section_crc:08x})")
+
+        logging.debug(f"CRC checksum for {self.name} section verified")
 
     def __repr__(self):
         return f"{self.__class__.__name__}(name='{self.name}', file_offset=0x{self.file_offset:08x}, load_address=0x{self.load_address:08x}, size=0x{self.size:08x}, crc=0x{self.crc:08x}, entry_id={self.entry_id})"
@@ -124,7 +133,7 @@ class MpuSlotInfo:
     enabled: bool
 
     @staticmethod
-    def from_bytes(data):
+    def from_bytes(data: bytes) -> MpuSlotInfo:
         slot = struct.unpack("<3I4s4s4s4s4s4s1I", data)
         mpu_rasr = bytes([(a | b | c | d | e | f)
                           for (a, b, c, d, e, f) in zip(*slot[3:9])])
@@ -132,10 +141,10 @@ class MpuSlotInfo:
 
         return MpuSlotInfo(data[0], slot[1], mpu_rasr, slot[9] != 0)
 
-    def get_is_enabled(self):
+    def get_is_enabled(self) -> bool:
         return ((self.mpu_rasr) & 0b1) == 1
 
-    def get_actual_size(self):
+    def get_actual_size(self) -> int:
         actual_size = (self.mpu_rasr >> 1) & 0b11111
 
         if actual_size < 0b00111:  # These are reserved according to the ARM Cortex documentation of the MPU_RASR size bit assignments
@@ -144,7 +153,7 @@ class MpuSlotInfo:
 
         return 2 ** (actual_size - 1)
 
-    def get_ap_bits(self):
+    def get_ap_bits(self) -> int:
         ap_bits = (self.mpu_rasr >> 24) & 0b111
 
         if ap_bits == 0b100:  # This value is reserved according to the ARM Cortex documentation of the MPU_RASR AP bit assignments
@@ -153,19 +162,19 @@ class MpuSlotInfo:
 
         return ap_bits
 
-    def get_priv_readable(self):
+    def get_priv_readable(self) -> bool:
         return self.get_ap_bits() in [0b001, 0b010, 0b011, 0b101, 0b110, 0b111]
 
-    def get_priv_writable(self):
+    def get_priv_writable(self) -> bool:
         return self.get_ap_bits() in [0b001, 0b010, 0b011]
 
-    def get_unpriv_readable(self):
+    def get_unpriv_readable(self) -> bool:
         return self.get_ap_bits() in [0b010, 0b011, 0b110, 0b111]
 
-    def get_unpriv_writable(self):
+    def get_unpriv_writable(self) -> bool:
         return self.get_ap_bits() in [0b011]
 
-    def get_executable(self):
+    def get_executable(self) -> bool:
         return ((self.mpu_rasr >> 28) & 0b1) == 0
 
     def __repr__(self):
@@ -188,11 +197,15 @@ class RadioParser:
 
     @staticmethod
     def parse(data: bytes) -> dict:
-        offset = 0
+        hexdump(data[:0x100])
+
         if data[:len(RadioParser.RADIO_MAGIC)] != RadioParser.RADIO_MAGIC:
             raise BadFileError("File is not a Shannon modem image")
-            
-        headers = RadioParser.parse_header(data)
+
+        headers = RadioParser.parse_header(data[offset:])
+        for header in headers.values():
+            header.verify_data_checksum(data)
+        logging.info("TOC header CRC checksums verified")
 
         if "BOOT" not in headers:
             raise BadFileError("File has no BOOT header section")
@@ -203,6 +216,7 @@ class RadioParser:
         main_header = headers["MAIN"]
 
         main_section = main_header.slice_section_data(data)
+        logging.info(f"CRC {zlib.crc32(main_section):x}")
 
         RadioParser.detect_soc_version(main_section)
         RadioParser.detect_shannon_version(main_section)
@@ -278,7 +292,6 @@ class RadioParser:
         return offset
 
     def parse_mpu_table(data: bytes) -> list[MpuSlotInfo]:
-        # hexdump(data)
         slots = []
 
         for i in range(100):
