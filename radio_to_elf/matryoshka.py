@@ -1,26 +1,12 @@
 import logging
 
 from fastboot_unpacker import FastbootUnpacker
+from tar_unpacker import TarUnpacker
 
 UNPACKERS = [
-    FastbootUnpacker()
+    FastbootUnpacker(),
+    TarUnpacker()
 ]
-
-# class Unpacker(ABC):
-
-#     @abstractmethod
-#     def get_format_name() -> str:
-#         pass
-
-#     @abstractmethod
-#     def check_can_unpack(data: bytes) -> bool:
-#         pass
-
-#     @abstractmethod
-#     def unpack(data: bytes) -> bytes:
-#         pass
-
-# ⌋
 
 
 def matryoshka_unpack(data: bytes) -> bytes:
@@ -31,7 +17,8 @@ def matryoshka_unpack(data: bytes) -> bytes:
 
         for unpacker in UNPACKERS:
             if unpacker.check_can_unpack(data):
-                logging.info(f"Unpacking detected {unpacker.get_format_name()} package format")
+                logging.info(
+                    f"Unpacking detected {unpacker.get_format_name()} package format")
                 data = unpacker.unpack(data)
 
                 unpackers_exhausted = False
