@@ -1,0 +1,5 @@
+cachetools==6.0.0
+crcmod==1.7
+ext4==1.1.0
+lxml==6.0.0
+PyYAML==6.0.2

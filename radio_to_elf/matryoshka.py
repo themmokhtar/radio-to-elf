@@ -2,10 +2,12 @@ import logging
 
 from fastboot_unpacker import FastbootUnpacker
 from tar_unpacker import TarUnpacker
+from ext4_unpacker import Ext4Unpacker
 
 UNPACKERS = [
     FastbootUnpacker(),
-    TarUnpacker()
+    TarUnpacker(),
+    Ext4Unpacker(),
 ]
 
 
