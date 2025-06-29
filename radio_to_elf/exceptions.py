@@ -12,6 +12,6 @@ class SectionOverlapError(Exception):
     def __init__(self, message):
         super(SectionOverlapError, self).__init__(message)
 
-class DanglingSymbolError(Exception):
+class InvalidBinaryInfoError(Exception):
     def __init__(self, message):
-        super(DanglingSymbolError, self).__init__(message)
+        super(InvalidBinaryInfoError, self).__init__(message)

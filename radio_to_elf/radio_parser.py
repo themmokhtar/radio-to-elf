@@ -9,7 +9,7 @@ import zlib
 from dataclasses import dataclass
 from typing import ClassVar
 
-from binary import Binary, BinarySection, BinarySymbol, AddressRange
+from binary import Binary, BinaryChunkInfo, BinarySymbolInfo, BinaryAddressRange, BinaryMappingInfo, BinaryPermissionsInfo
 from exceptions import BadFileError, FileParsingError
 
 
@@ -120,9 +120,9 @@ class TocHeaderInfo:
         section_data = self.slice_section_data(data)
         section_crc = zlib.crc32(section_data)
 
-        # if section_crc != self.crc:
-        #     raise FileParsingError(
-        #         f"Failed to parse TOC header with invalid {self.name} section data CRC checksum (expected 0x{self.crc:08x}, got 0x{section_crc:08x})")
+        if section_crc != self.crc:
+            logging.warning(
+                f"Failed to parse TOC header with invalid {self.name} section data CRC checksum (expected 0x{self.crc:08x}, got 0x{section_crc:08x})")
 
         logging.debug(
             f"CRC checksum for {self.name} section verified (0x{section_crc:08x})")
@@ -138,21 +138,13 @@ class MpuSlotInfo:
     slot_id: int
     base_address: int
     mpu_rasr: int
-    enabled: bool
 
-    @staticmethod
-    def from_bytes(data: bytes) -> MpuSlotInfo:
-        slot = struct.unpack("<3I4s4s4s4s4s4s1I", data)
-        mpu_rasr = bytes([(a | b | c | d | e | f)
-                          for (a, b, c, d, e, f) in zip(*slot[3:9])])
-        mpu_rasr = (struct.unpack("<I", mpu_rasr)[0] << 16) | slot[2] | slot[9]
-
-        return MpuSlotInfo(data[0], slot[1], mpu_rasr, slot[9] != 0)
-
-    def get_is_enabled(self) -> bool:
+    @property
+    def enabled(self) -> bool:
         return ((self.mpu_rasr) & 0b1) == 1
 
-    def get_actual_size(self) -> int:
+    @property
+    def size(self) -> int:
         actual_size = (self.mpu_rasr >> 1) & 0b11111
 
         if actual_size < 0b00111:  # These are reserved according to the ARM Cortex documentation of the MPU_RASR size bit assignments
@@ -161,7 +153,8 @@ class MpuSlotInfo:
 
         return 2 ** (actual_size - 1)
 
-    def get_ap_bits(self) -> int:
+    @property
+    def ap_bits(self) -> int:
         ap_bits = (self.mpu_rasr >> 24) & 0b111
 
         if ap_bits == 0b100:  # This value is reserved according to the ARM Cortex documentation of the MPU_RASR AP bit assignments
@@ -170,26 +163,40 @@ class MpuSlotInfo:
 
         return ap_bits
 
-    def get_priv_readable(self) -> bool:
-        return self.get_ap_bits() in [0b001, 0b010, 0b011, 0b101, 0b110, 0b111]
+    @property
+    def priv_readable(self) -> bool:
+        return self.ap_bits in [0b001, 0b010, 0b011, 0b101, 0b110, 0b111]
 
-    def get_priv_writable(self) -> bool:
-        return self.get_ap_bits() in [0b001, 0b010, 0b011]
+    @property
+    def priv_writable(self) -> bool:
+        return self.ap_bits in [0b001, 0b010, 0b011]
 
-    def get_unpriv_readable(self) -> bool:
-        return self.get_ap_bits() in [0b010, 0b011, 0b110, 0b111]
+    @property
+    def unpriv_readable(self) -> bool:
+        return self.ap_bits in [0b010, 0b011, 0b110, 0b111]
 
-    def get_unpriv_writable(self) -> bool:
-        return self.get_ap_bits() in [0b011]
+    @property
+    def unpriv_writable(self) -> bool:
+        return self.ap_bits in [0b011]
 
-    def get_executable(self) -> bool:
+    @property
+    def executable(self) -> bool:
         return ((self.mpu_rasr >> 28) & 0b1) == 0
+
+    @staticmethod
+    def from_bytes(data: bytes) -> MpuSlotInfo:
+        slot = struct.unpack("<3I4s4s4s4s4s4s1I", data)
+        mpu_rasr = bytes([(a | b | c | d | e | f)
+                          for (a, b, c, d, e, f) in zip(*slot[3:9])])
+        mpu_rasr = (struct.unpack("<I", mpu_rasr)[0] << 16) | slot[2] | slot[9]
+
+        return MpuSlotInfo(data[0], slot[1], mpu_rasr)
 
     def __repr__(self):
         return f"{self.__class__.__name__}(slot_id={self.slot_id}, base_address=0x{self.base_address:08x}, mpu_rasr=0x{self.mpu_rasr:08x} [" + \
-            f"priv_perms={'r' if self.get_priv_readable() else '-'}{'w' if self.get_priv_writable() else '-'}{'x' if self.get_executable() else '-'}, " + \
-            f"unpriv_perms={'r' if self.get_unpriv_readable() else '-'}{'w' if self.get_unpriv_writable() else '-'}{'x' if self.get_executable() else '-'}, " + \
-            f"size=0x{self.get_actual_size():08x}, enabled={self.get_is_enabled()}" + \
+            f"priv_perms={'r' if self.priv_readable else '-'}{'w' if self.priv_writable else '-'}{'x' if self.executable else '-'}, " + \
+            f"unpriv_perms={'r' if self.unpriv_readable else '-'}{'w' if self.unpriv_writable else '-'}{'x' if self.executable else '-'}, " + \
+            f"size=0x{self.size:08x}, enabled={self.enabled}" + \
             f"])"
 
 
@@ -205,7 +212,7 @@ class RadioParser:
 
     @staticmethod
     def parse(data: bytes) -> Binary:
-        sections = []
+        result = Binary()
 
         if data[:len(RadioParser.RADIO_MAGIC)] != RadioParser.RADIO_MAGIC:
             raise BadFileError("File is not a Shannon modem image")
@@ -220,11 +227,15 @@ class RadioParser:
         if "MAIN" not in headers:
             raise BadFileError("File has no MAIN header section")
 
+        chunk_handle = result.add_chunk(BinaryChunkInfo("modem", data))
+        for header in headers.values():
+            result.impose_mapping(BinaryAddressRange(
+                header.load_address, header.size), BinaryMappingInfo(header.file_offset, chunk_handle))
+
         boot_header = headers["BOOT"]
         main_header = headers["MAIN"]
 
         main_section = main_header.slice_section_data(data)
-        # logging.info(f"CRC {zlib.crc32(main_section):x}")
 
         RadioParser.detect_soc_version(main_section)
         RadioParser.detect_shannon_version(main_section)
@@ -234,6 +245,13 @@ class RadioParser:
         if mpu_offset != None:
             mpu_table = RadioParser.parse_mpu_table(main_section[mpu_offset:])
 
+            for slot in mpu_table:
+                if not slot.enabled:
+                    continue
+
+                result.impose_permissions(BinaryAddressRange(slot.base_address, slot.size),
+                                          BinaryPermissionsInfo(slot.priv_readable, slot.priv_writable, slot.executable))
+            print(mpu_table)
             # Calculate actual permissions from here
 
         RadioParser.do_scatterload(main_section)
@@ -241,15 +259,7 @@ class RadioParser:
 
         # Type the MPU entries for reversing
 
-        result = Binary()
-        for header in headers.values():
-            if header.load_address == 0:
-                continue
-
-            result.add_section(BinarySection(header.name, header.load_address, header.slice_section_data(data), True, True, True))
-        
         return result
-
 
     @staticmethod
     def parse_header(data: bytes) -> dict:
@@ -330,7 +340,6 @@ class RadioParser:
         logging.info(f"Parsed {len(slots)} slots in MPU entry")
 
         return slots
-        # TODO puts them in the addrentries?
 
     @staticmethod
     def do_scatterload(data: bytes):
@@ -340,5 +349,5 @@ class RadioParser:
             logging.warning("Unable to find scatterload code")
             return None
 
-        print(match["THUMB"])
-        print(match["ARM"])
+        # print(match["THUMB"])
+        # print(match["ARM"])
