@@ -2,4 +2,5 @@ cachetools==6.0.0
 crcmod==1.7
 ext4==1.1.0
 lxml==6.0.0
+makeelf==0.3.4
 PyYAML==6.0.2

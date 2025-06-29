@@ -9,6 +9,7 @@ import zlib
 from dataclasses import dataclass
 from typing import ClassVar
 
+from binary import Binary, BinarySection, BinarySymbol, AddressRange
 from exceptions import BadFileError, FileParsingError
 
 
@@ -84,6 +85,12 @@ class RegexDB:
         )
     )
 
+    SCATTERLOAD = re.compile(
+        b"(?P<THUMB>\\x0A\\xA0\\x90\\xE8\\x00\\x0C\\x82\\x44)"
+        b"|"
+        b"(?P<ARM>\\x2C\\x00\\x8F\\xE2\\x00\\x0C\\x90\\xE8\\x00\\xA0\\x8A\\xE0\\x00\\xB0\\x8B\\xE0)"
+    )
+
 
 @dataclass
 class TocHeaderInfo:
@@ -117,7 +124,8 @@ class TocHeaderInfo:
         #     raise FileParsingError(
         #         f"Failed to parse TOC header with invalid {self.name} section data CRC checksum (expected 0x{self.crc:08x}, got 0x{section_crc:08x})")
 
-        logging.debug(f"CRC checksum for {self.name} section verified (0x{section_crc:08x})")
+        logging.debug(
+            f"CRC checksum for {self.name} section verified (0x{section_crc:08x})")
 
     def __repr__(self):
         return f"{self.__class__.__name__}(name='{self.name}', file_offset=0x{self.file_offset:08x}, load_address=0x{self.load_address:08x}, size=0x{self.size:08x}, crc=0x{self.crc:08x}, entry_id={self.entry_id})"
@@ -196,8 +204,8 @@ class RadioParser:
     RADIO_MAGIC = b"TOC\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 
     @staticmethod
-    def parse(data: bytes) -> dict:
-        hexdump(data[:0x100])
+    def parse(data: bytes) -> Binary:
+        sections = []
 
         if data[:len(RadioParser.RADIO_MAGIC)] != RadioParser.RADIO_MAGIC:
             raise BadFileError("File is not a Shannon modem image")
@@ -228,9 +236,20 @@ class RadioParser:
 
             # Calculate actual permissions from here
 
+        RadioParser.do_scatterload(main_section)
         # Load sections from TOC
 
         # Type the MPU entries for reversing
+
+        result = Binary()
+        for header in headers.values():
+            if header.load_address == 0:
+                continue
+
+            result.add_section(BinarySection(header.name, header.load_address, header.slice_section_data(data), True, True, True))
+        
+        return result
+
 
     @staticmethod
     def parse_header(data: bytes) -> dict:
@@ -248,6 +267,7 @@ class RadioParser:
 
         return result
 
+    @staticmethod
     def detect_soc_version(data: bytes) -> tuple[str, str] | None:
         # TODO check for multiple matches?
         match = RegexDB.SOC_VERSION.search(data)
@@ -263,6 +283,7 @@ class RadioParser:
 
         return version
 
+    @staticmethod
     def detect_shannon_version(data: bytes) -> str | None:
         # TODO check for multiple matches?
         match = RegexDB.SHANNON_VERSION.search(data)
@@ -277,6 +298,7 @@ class RadioParser:
 
         return version
 
+    @staticmethod
     def find_mpu_table(data: bytes) -> int | None:
         # TODO check for multiple matches?
         match = RegexDB.MPU_TABLE.search(data)
@@ -291,6 +313,7 @@ class RadioParser:
 
         return offset
 
+    @staticmethod
     def parse_mpu_table(data: bytes) -> list[MpuSlotInfo]:
         slots = []
 
@@ -308,3 +331,14 @@ class RadioParser:
 
         return slots
         # TODO puts them in the addrentries?
+
+    @staticmethod
+    def do_scatterload(data: bytes):
+        match = RegexDB.SCATTERLOAD.search(data)
+
+        if not match:
+            logging.warning("Unable to find scatterload code")
+            return None
+
+        print(match["THUMB"])
+        print(match["ARM"])
