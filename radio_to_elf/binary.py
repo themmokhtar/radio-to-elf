@@ -65,11 +65,11 @@ class BinaryAddressRange:
     def __and__(self, other: BinaryAddressRange) -> BinaryAddressRange | None:
         new_start = max(self.start, other.start)
         new_end = min(self.end, other.end)
-        print(f"new_end {new_end:x}")
-        print(f"new_start {new_start:x}")
+        # print(f"new_end {new_end:x}")
+        # print(f"new_start {new_start:x}")
         if new_start >= new_end:
             return None
-        print("NOTNONE")
+            
         return BinaryAddressRange.from_start_end(new_start, new_end)
 
     # Calculates the union of two address ranges (may return 1 or 2 ranges)
@@ -197,8 +197,8 @@ class Binary:
 
         i = 0
 
-        print(info)
-        print(self._address_space)
+        # print(info)
+        # print(self._address_space)
         prev_range = BinaryAddressRange(0, 0)
         while i <= len(self._address_space) and mapping_range.end > prev_range.end:
             is_last_range = i == len(self._address_space)
@@ -215,12 +215,12 @@ class Binary:
             # During this iteration, we need to fix all the area from prev_range.end to next_range.end
             imposed_range = mapping_range & BinaryAddressRange.from_start_end(
                 prev_range.end, next_range.end)
-            print("mapping_range", mapping_range)
-            print("anded_range", BinaryAddressRange.from_start_end(
-                prev_range.end, next_range.end))
-            print("prev_range", prev_range)
-            print("next_range", next_range)
-            print("imposed_range", imposed_range)
+            # print("mapping_range", mapping_range)
+            # print("anded_range", BinaryAddressRange.from_start_end(
+            #     prev_range.end, next_range.end))
+            # print("prev_range", prev_range)
+            # print("next_range", next_range)
+            # print("imposed_range", imposed_range)
 
             prev_range = next_range
 

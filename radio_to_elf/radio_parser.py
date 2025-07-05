@@ -251,7 +251,7 @@ class RadioParser:
 
                 result.impose_permissions(BinaryAddressRange(slot.base_address, slot.size),
                                           BinaryPermissionsInfo(slot.priv_readable, slot.priv_writable, slot.executable))
-            print(mpu_table)
+            # print(mpu_table)
             # Calculate actual permissions from here
 
         RadioParser.do_scatterload(main_section)
@@ -349,5 +349,8 @@ class RadioParser:
             logging.warning("Unable to find scatterload code")
             return None
 
-        # print(match["THUMB"])
+        match_type = "THUMB" if match["THUMB"] else "ARM"
+
+        logging.info(f"Found {match_type} version of scatterload function at offset 0x{match.start():x} in section")
+        # print(dir(match))
         # print(match["ARM"])
