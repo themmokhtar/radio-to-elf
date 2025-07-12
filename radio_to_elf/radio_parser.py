@@ -296,13 +296,6 @@ class ScatterloadEntryInfo:
         return f"{self.__class__.__name__}(src={self.src:#08x}, dst={self.dst:#08x}, size={self.size:#08x}, handler={self.handler:#08x})"
 
 
-# Parsed MPU slot: MpuSlotInfo(slot_id=8, base_address=1276116992, size=38, flags=b'\x08\x13\x00\x00', enabled=True)
-#
-# def slice_section_data(self, data):
-#     return data[self.file_offset:self.file_offset + self.size]
-
-# Parsed MPU slot: MpuSlotInfo(slot_id=2, base_address=1077936128, size=40, flags=b'\x0b\x16\x00\x00', enabled=True)
-
 class RadioParser:
     RADIO_MAGIC = b"TOC\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 
@@ -422,11 +415,6 @@ class RadioParser:
 
                 handler_name = handlers_addresses[entry.handler]
 
-                # if handler_name != "__scatterload_zeroinit":
-                #     # 2A77360
-                #     # translated = binary.translate_address_range(BinaryAddressRange(entry.src + 0x100000, entry.size))
-                #     # print(translated)
-
                 destination_ranges = binary.translate_address_range(
                     BinaryAddressRange(entry.src, 4))
                 if len(destination_ranges) > 0 and binary[destination_ranges[0]] == b"DBT:" or False:
@@ -453,7 +441,7 @@ class RadioParser:
                 if len(translated_ranges) == 0:
                     raise NotImplementedError(
                         f"Implementing {handler_name} for empty ranges is not supported (yet, hopefully)")
-                translated_range = translated_ranges[0] 
+                translated_range = translated_ranges[0]
                 # print(translated_range)
 
                 if translated_range.address_range.start != entry.src:
@@ -655,60 +643,6 @@ class RadioParser:
 
         return scatterload_table_start_offset, scatterload_table_end_offset, entries
 
-    # @staticmethod
-    # def scatterload_decompress1(data: bytes, decompressed_size: int):
-    #     result = io.BytesIO()
-
-    #     idata = iter(data)
-
-    #     start = time.time()
-    #     while len(result.getvalue()) < decompressed_size:
-    #         percent = (len(result.getvalue()) / decompressed_size)  * 100
-    #         print(f"t {percent}%")
-    #         # if percent >= 5:
-    #         #     exit(0)
-    #         #     print(time.time()-start)
-    #         #     break
-
-    #         token = next(idata)
-
-    #         match_len = token & 7
-    #         if match_len == 0:
-    #             match_len = next(idata)
-
-    #         lit_len = (token >> 4) & 0xf
-    #         if lit_len == 0:
-    #             lit_len = next(idata)
-
-    #         for _ in range(match_len - 1):
-    #             if len(result.getvalue()) >= decompressed_size:
-    #                 raise FileParsingError("Decompression overflow")
-    #             result.write(bytes(next(idata)))
-
-    #         # RLE for zeros
-    #         if token & 8 == 0:
-    #             for _ in range(lit_len):
-    #                 if len(result.getvalue()) >= decompressed_size:
-    #                     raise FileParsingError("Decompression overflow")
-    #                 result.write(b"\x00")
-    #         else:
-    #             backref = next(idata)
-    #             backref_offset = len(result.getvalue()) - backref
-
-    #             for _ in range(lit_len + 2):
-    #                 if len(result.getvalue()) >= decompressed_size:
-    #                     raise FileParsingError("Decompression overflow")
-
-    #                 # print(result)
-    #                 if backref_offset < 0 or backref_offset >= len(result.getvalue()) or backref_offset >= decompressed_size:
-    #                     print(f"backref_offset = {backref_offset}, len(result.getvalue()) = {len(result).getvalue()}")
-    #                     raise FileParsingError("Decompression backreference out-of-range")
-
-    #                 backref_offset = len(result) - backref
-    #                 result.write(result.getbuffer()[backref_offset:backref_offset+1])
-
-    #     return result
-
     @staticmethod
     def scatterload_decompress1(data: bytes, decompressed_size: int):
         result = io.BytesIO()
@@ -743,14 +677,7 @@ class RadioParser:
 
                 for _ in range(backref_size):
                     if len(result.getvalue()) >= decompressed_size:
-                        # print(len(result.getvalue()), decompressed_size)
-                        # print()
                         raise FileParsingError("Decompression overflow")
-
-                    # backref_offset = len(result.getvalue()) - backref
-                    # if backref_offset < 0 or backref_offset >= len(result.getvalue()) or backref_offset >= decompressed_size:
-                    #     print(f"backref_offset = {backref_offset}, len(result) = {len(result)}")
-                    #     raise FileParsingError("Decompression backreference out-of-range")
 
                     result.seek(-backref, os.SEEK_END)
                     one_byte = result.read(1)
@@ -761,82 +688,8 @@ class RadioParser:
                     result.seek(0, os.SEEK_END)
                     result.write(one_byte)
 
-                # print(f"backref_offset = {backref_offset}, {backref_end_offset}, {len(result.getvalue())}")
-                # if backref_offset < 0 \
-                #         or backref_offset >= len(result.getvalue()) or backref_offset >= decompressed_size \
-                #         or backref_end_offset >= len(result.getvalue()) or backref_end_offset >= decompressed_size:
-                #     raise FileParsingError(
-                #         "Decompression backreference out-of-range")
-
-                # result.seek(backref_offset, os.SEEK_SET)
-                # result.seek(backref, os.SEEK_CUR)
-                # data = result.read(backref_size)
-
-                # result.seek(0, os.SEEK_END)
-                # result.write(data)
-
                 if len(result.getvalue()) > decompressed_size:
                     raise FileParsingError("Decompression overflow")
 
         print('\r', end='')
         return result.getvalue()
-
-    # @staticmethod
-    # def scatterload_decompress1(data: bytes, decompressed_size: int):
-    #     result = b""
-
-    #     idata = iter(data)
-
-    #     while len(result) < decompressed_size:
-    #         token = next(idata)
-
-    #         match_len = token & 7
-    #         if match_len == 0:
-    #             match_len = next(idata)
-
-    #         lit_len = (token >> 4) & 0xf
-    #         if lit_len == 0:
-    #             lit_len = next(idata)
-
-    #         for _ in range(match_len - 1):
-    #             if len(result) >= decompressed_size:
-    #                 raise FileParsingError("Decompression overflow")
-    #             result += bytes(next(idata))
-
-    #         # RLE for zeros
-    #         if token & 8 == 0:
-    #             for _ in range(lit_len):
-    #                 if len(result) >= decompressed_size:
-    #                     raise FileParsingError("Decompression overflow")
-    #                 result += b"\x00"
-    #         else:
-    #             backref = next(idata)
-    #             backref_offset = len(result) - backref
-
-    #             for _ in range(lit_len + 2):
-    #                 if len(result) >= decompressed_size:
-    #                     raise FileParsingError("Decompression overflow")
-
-    #                 # print(result)
-    #                 if backref_offset < 0 or backref_offset >= len(result) or backref_offset >= decompressed_size:
-    #                     print(f"backref_offset = {backref_offset}, len(result) = {len(result)}")
-    #                     raise FileParsingError("Decompression backreference out-of-range")
-
-    #                 backref_offset = len(result) - backref
-    #                 result += result[backref_offset:backref_offset+1]
-
-    #         print(f"{(len(result) / decompressed_size) * 100}%")
-
-    #     return result
-        # match = RegexDB.SCATTERLOAD.search(data)
-
-        # if not match:
-        #     logging.warning("Unable to find scatterload code")
-        #     return None
-
-        # match_type = "THUMB" if match["THUMB"] else "ARM"
-
-        # logging.info(
-        #     f"Found {match_type} version of scatterload function at offset 0x{match.start():x} in section")
-
-        # return match, match_type
