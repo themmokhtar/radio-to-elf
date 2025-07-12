@@ -324,14 +324,22 @@ STT_FILE = 4
 STT_COMMON = 5
 STT_TLS = 6
 
+STV_DEFAULT = 0  # Default symbol visibility rules
+STV_INTERNAL = 1  # Processor specific hidden class
+STV_HIDDEN = 2  # Sym unavailable in other modules
+STV_PROTECTED = 3  # Not preemptible, not exported
 
 def ELF_ST_BIND(x): return ((x) >> 4)
 def ELF_ST_TYPE(x): return ((x) & 0xf)
+def ELF_ST_VISIBILITY(x): return ((x) & 0x03)
 def ELF32_ST_BIND(x): return ELF_ST_BIND(x)
 def ELF32_ST_TYPE(x): return ELF_ST_TYPE(x)
 def ELF64_ST_BIND(x): return ELF_ST_BIND(x)
 def ELF64_ST_TYPE(x): return ELF_ST_TYPE(x)
+def ELF32_ST_VISIBILITY(x): return ELF_ST_VISIBILITY(x)
+def ELF64_ST_VISIBILITY(x): return ELF_ST_VISIBILITY(x)
 
+def ELF64_ST_INFO(st_bind, st_type): return (((st_bind) << 4) + ((st_type) & 0xf))
 
 class Elf32_Dyn(Structure):
     class d_un_t(Union):

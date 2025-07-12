@@ -8,7 +8,7 @@ import logging
 
 from io import BytesIO
 
-from binary import Binary, BinaryChunkInfo, BinarySymbolInfo, BinaryAddressRange, BinaryMappingInfo, BinaryPermissionsInfo
+from binary import Binary, BinaryChunkInfo, BinarySymbolInfo, BinaryAddressRange, BinaryMappingInfo, BinaryPermissionsInfo, ZeroChunkHandle
 
 from elf import *
 
@@ -139,7 +139,7 @@ class Elfinator:
         shstrtab_data = b"\x00.shstrtab\x00"
         shstrtab_shdr = Elf32_Shdr()
         shstrtab_shdr.sh_name = 1
-        shstrtab_shdr.sh_type = SHT_PROGBITS
+        shstrtab_shdr.sh_type = SHT_STRTAB
         shstrtab_shdr.sh_flags = 0
         shstrtab_shdr.sh_addr = 0
         shstrtab_shdr.sh_offset = 0  # Deferred
@@ -148,6 +148,36 @@ class Elfinator:
         shstrtab_shdr.sh_info = 0
         shstrtab_shdr.sh_addralign = 0
         shstrtab_shdr.sh_entsize = 0
+
+        strtab_data = b"\x00"
+        strtab_shdr = Elf32_Shdr()
+        strtab_shdr.sh_name = len(shstrtab_data)
+        strtab_shdr.sh_type = SHT_STRTAB
+        strtab_shdr.sh_flags = 0
+        strtab_shdr.sh_addr = 0
+        strtab_shdr.sh_offset = 0  # Deferred
+        strtab_shdr.sh_size = 0  # Deferred
+        strtab_shdr.sh_link = 0
+        strtab_shdr.sh_info = 0
+        strtab_shdr.sh_addralign = 0
+        strtab_shdr.sh_entsize = 0
+        strtab_size = 0
+        shstrtab_data += b".strtab\x00"
+
+        symtab_data = b""
+        symtab_shdr = Elf32_Shdr()
+        symtab_shdr.sh_name = len(shstrtab_data)
+        symtab_shdr.sh_type = SHT_SYMTAB
+        symtab_shdr.sh_flags = 0
+        symtab_shdr.sh_addr = 0
+        symtab_shdr.sh_offset = 0  # Deferred
+        symtab_shdr.sh_size = 0  # Deferred
+        symtab_shdr.sh_link = 0  # Deferred
+        symtab_shdr.sh_info = 1
+        symtab_shdr.sh_addralign = 0
+        symtab_shdr.sh_entsize = len(bytes(Elf32_Sym()))
+        symtab_size = 0
+        shstrtab_data += b".symtab\x00"
 
         unmapped_shdr = Elf32_Shdr()
         unmapped_shdr.sh_name = len(shstrtab_data)
@@ -168,7 +198,7 @@ class Elfinator:
         for chunk_handle, chunk in binary.chunks:
             shdr = Elf32_Shdr()
             shdr.sh_name = len(shstrtab_data)
-            shdr.sh_type = SHT_PROGBITS
+            shdr.sh_type = SHT_NOBITS if chunk_handle == ZeroChunkHandle else SHT_PROGBITS
             shdr.sh_flags = 0
             shdr.sh_addr = 0
             shdr.sh_offset = 0  # Deferred
@@ -182,7 +212,7 @@ class Elfinator:
 
             chunk_to_shdr_idx[chunk_handle] = len(shdrs)
 
-            shdrs.append((shdr, chunk))
+            shdrs.append((shdr, None if shdr.sh_type == SHT_NOBITS else chunk))
 
         phdrs = []
         for range_info in binary.address_space:
@@ -197,6 +227,7 @@ class Elfinator:
             shdr_idx = -1  # Default for the unmapped section
             if range_info.mapping:
                 shdr_idx = chunk_to_shdr_idx[range_info.mapping.chunk]
+            else:
                 unmapped_shdr.sh_size = \
                     max(unmapped_shdr.sh_size,
                         range_info.address_range.size)  # Fulfilled
@@ -216,13 +247,29 @@ class Elfinator:
 
             phdrs.append((phdr, shdr_idx))
 
+        symtab_data += bytes(Elf32_Sym(st_shndx=SHN_UNDEF))
+        for symbol in binary.address_symbols:
+            sym = Elf32_Sym()
+            sym.st_name = len(strtab_data)
+            sym.st_value = symbol.address_range.address
+            sym.st_size = symbol.address_range.size
+            # TODO: Maybe we actually want to associate types here
+            sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_NOTYPE)
+            sym.st_other = STV_DEFAULT
+            # +1 for the first empty shdr
+            sym.st_shndx = chunk_to_shdr_idx[symbol.mapping.chunk] + 1
+            strtab_data += f"{symbol.name}+0x{symbol.offset:x},0x{symbol.address_range.size:x}".encode(
+                'utf-8') + b"\x00"
+
+            symtab_data += bytes(sym)
+
         ######################
         ### Update offsets ###
         ######################
         ehdr.e_phnum = len(phdrs)  # Fulfilled
 
-        # Fulfilled (+1 for the intial section, +1 for the 'unmapped' section, +1 for the '.shstrtab' section)
-        ehdr.e_shnum = len(shdrs) + 3
+        # Fulfilled (+5 first NULL section, 'unmapped' section, 'symtab' section, 'strtab' section, '.shstrtab' section)
+        ehdr.e_shnum = len(shdrs) + 5
         if ehdr.e_shnum > SHN_LORESERVE:
             raise NotImplementedError(
                 f"Cannot handle more sections than SHN_LORESERVE ({SHN_LORESERVE})")
@@ -234,15 +281,26 @@ class Elfinator:
         ehdr.e_phoff = offset  # Fulfilled
         offset += len(phdrs) * len(bytes(Elf32_Phdr()))
 
-        for i in range(len(shdrs)):
-            shdrs[i][0].sh_offset = offset  # Fulfilled
-            offset += len(shdrs[i][1].data)
+        for shdr, chunk in shdrs:
+            shdr.sh_offset = offset  # Fulfilled
+
+            if shdr.sh_type != SHT_NOBITS:
+                offset += len(chunk.data)
 
         unmapped_shdr.sh_offset = offset  # Fulfilled
 
+        strtab_shdr.sh_offset = offset  # Fulfilled
+        strtab_shdr.sh_size = len(strtab_data)  # Fulfilled
+        offset += strtab_shdr.sh_size
+
+        symtab_shdr.sh_offset = offset  # Fulfilled
+        symtab_shdr.sh_size = len(symtab_data)  # Fulfilled
+        symtab_shdr.sh_link = ehdr.e_shnum - 3  # Fulfilled
+        offset += symtab_shdr.sh_size
+
         shstrtab_shdr.sh_offset = offset  # Fulfilled
         shstrtab_shdr.sh_size = len(shstrtab_data)  # Fulfilled
-        offset += len(shstrtab_data)
+        offset += shstrtab_shdr.sh_size
 
         ehdr.e_shoff = offset  # Fulfilled
 
@@ -261,14 +319,22 @@ class Elfinator:
         for phdr, _ in phdrs:
             result.write(phdr)
 
-        for _, chunk in shdrs:
+        for shdr, chunk in shdrs:
+            if shdr.sh_type == SHT_NOBITS:
+                continue
+
             result.write(chunk.data)
+        
+        result.write(strtab_data)
+        result.write(symtab_data)
         result.write(shstrtab_data)
 
         result.write(Elf32_Shdr())
         for shdr, _ in shdrs:
             result.write(shdr)
         result.write(unmapped_shdr)
+        result.write(strtab_shdr)
+        result.write(symtab_shdr)
         result.write(shstrtab_shdr)
 
         result.seek(0)
