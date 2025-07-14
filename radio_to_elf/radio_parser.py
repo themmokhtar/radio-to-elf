@@ -12,7 +12,7 @@ from itertools import islice
 from dataclasses import dataclass
 from typing import ClassVar
 
-from binary import Binary, BinaryChunkInfo, BinarySymbolInfo, BinaryAddressRange, BinaryMappingRange, BinaryMappingInfo, BinaryPermissionsInfo, ZeroChunkHandle
+from binary import Binary, BinaryChunkInfo, BinarySymbolType, BinarySymbolInfo, BinaryAddressRange, BinaryMappingRange, BinaryMappingInfo, BinaryPermissionsInfo, ZeroChunkHandle
 from exceptions import BadFileError, FileParsingError
 
 
@@ -34,7 +34,7 @@ def hexdump(data: bytes, line_size: int = 16) -> None:
         offset += line_size
 
 
-# All the patterns specified in this class are courtesy of Grant-H and his team
+# Most patterns specified in this class are courtesy of Grant-H and his team
 # Many many thanks to their amazing team for making their research public
 # https://github.com/grant-h/ShannonBaseband.git
 class RegexDB:
@@ -165,8 +165,14 @@ class RegexDB:
         b")"
     )
 
+    # Nobody (at least, publicly) found this decompression implementation in a shannon baseband image (yet)
     SCATTERLOAD_DECOMPRESS2 = re.compile(
         b"\\x10\\xf8\\x01\\x3b\\x0a\\x44\\x13\\xf0\\x03\\x04\\x08\\xbf\\x10\\xf8\\x01\\x4b"
+    )
+
+    # This one is mine
+    TASKS_NAMES = re.compile(
+        b"(?P<FIRST>PBM\x00)(?P<SECOND>DS_PBM\x00)"
     )
 
 
@@ -296,8 +302,28 @@ class ScatterloadEntryInfo:
         return f"{self.__class__.__name__}(src={self.src:#08x}, dst={self.dst:#08x}, size={self.size:#08x}, handler={self.handler:#08x})"
 
 
+@dataclass
+class TaskInfo:
+    name: str
+
+    name_offset: int
+    name_pointer_offset: int
+    entry_address: int
+    entry_pointer_offset: int
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(name={repr(self.name)}, name_offset={self.name_offset:#08x}, name_pointer_offset={self.name_pointer_offset:#08x}, entry_address={self.entry_address:#08x}, entry_pointer_offset={self.entry_pointer_offset:#08x})"
+
+
 class RadioParser:
-    RADIO_MAGIC = b"TOC\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    # All the zeroes to prevent any possible confusion with text files
+    RADIO_MAGIC: ClassVar[bytes] = b"TOC\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+    # Just a good enough value
+    TASK_NAME_MAX_LEN: ClassVar[int] = 512
+
+    # Hopefully that doesn't change between builds
+    TASK_TCB_NAME_TO_ENTRY_OFFSET: ClassVar[int] = 12
 
     @staticmethod
     def parse(data: bytes) -> Binary:
@@ -322,7 +348,7 @@ class RadioParser:
             binary.impose_mapping(BinaryAddressRange(
                 header.load_address, header.size), BinaryMappingInfo(header.file_offset, chunk_handle))
             binary.add_symbol(
-                BinarySymbolInfo(f"section_{header.name}", header.size, BinaryMappingInfo(header.file_offset, chunk_handle)))
+                BinarySymbolInfo(f"section_{header.name}", header.size, BinarySymbolType.SECTION, BinaryMappingInfo(header.file_offset, chunk_handle)))
 
         boot_header = headers["BOOT"]
         main_header = headers["MAIN"]
@@ -334,13 +360,13 @@ class RadioParser:
         if soc_version:
             version_span = soc_version.span()
             binary.add_symbol(
-                BinarySymbolInfo(f"soc_version", version_span[1] - version_span[0], BinaryMappingInfo(version_span[0] + main_header.file_offset, chunk_handle)))
+                BinarySymbolInfo(f"soc_version", version_span[1] - version_span[0], BinarySymbolType.DATA, BinaryMappingInfo(version_span[0] + main_header.file_offset, chunk_handle)))
 
         shannon_version = RadioParser.detect_shannon_version(main_section)
         if shannon_version:
             version_span = shannon_version.span()
             binary.add_symbol(
-                BinarySymbolInfo(f"shannon_version", version_span[1] - version_span[0], BinaryMappingInfo(version_span[0] + main_header.file_offset, chunk_handle)))
+                BinarySymbolInfo(f"shannon_version", version_span[1] - version_span[0], BinarySymbolType.DATA, BinaryMappingInfo(version_span[0] + main_header.file_offset, chunk_handle)))
 
         # Parse MPU Table
         mpu_offset = RadioParser.find_mpu_table(main_section)
@@ -349,7 +375,7 @@ class RadioParser:
             mpu_table = RadioParser.parse_mpu_table(main_section[mpu_offset:])
 
             binary.add_symbol(
-                BinarySymbolInfo(f"mpu_table", (len(mpu_table) + 1) * MpuSlotInfo.SIZE, BinaryMappingInfo(mpu_offset + main_header.file_offset, chunk_handle)))
+                BinarySymbolInfo(f"mpu_table", (len(mpu_table) + 1) * MpuSlotInfo.SIZE, BinarySymbolType.DATA, BinaryMappingInfo(mpu_offset + main_header.file_offset, chunk_handle)))
 
             for slot in mpu_table:
                 if not slot.enabled:
@@ -365,13 +391,13 @@ class RadioParser:
             # Scatterload itself
             scatterload_span = scatterload.span()
 
-            binary.add_symbol(BinarySymbolInfo(f"__scatterload_{scatterload_type}", scatterload_span[1] - scatterload_span[0],
+            binary.add_symbol(BinarySymbolInfo(f"__scatterload_{scatterload_type}", scatterload_span[1] - scatterload_span[0], BinarySymbolType.FUNCTION,
                                                BinaryMappingInfo(scatterload_span[0] + main_header.file_offset, chunk_handle)))
 
             # Scatterload table
             scatterload_table_start_offset, scatterload_table_end_offset, entries = RadioParser.parse_scatterload(
                 main_section, scatterload_span[0], scatterload_type == "THUMB")
-            binary.add_symbol(BinarySymbolInfo(f"scatterload_table", scatterload_table_end_offset - scatterload_table_start_offset,
+            binary.add_symbol(BinarySymbolInfo(f"scatterload_table", scatterload_table_end_offset - scatterload_table_start_offset, BinarySymbolType.DATA, 
                               BinaryMappingInfo(scatterload_table_start_offset + main_header.file_offset, chunk_handle)))
 
             # Scatterload handlers
@@ -383,7 +409,7 @@ class RadioParser:
                     continue
 
                 function_span = match.span()
-                binary.add_symbol(BinarySymbolInfo(function, function_span[1] - function_span[0],
+                binary.add_symbol(BinarySymbolInfo(function, function_span[1] - function_span[0], BinarySymbolType.FUNCTION,
                                                    BinaryMappingInfo(function_span[0] + main_header.file_offset, chunk_handle)))
 
                 ranges = binary.translate_mapping_range(
@@ -484,7 +510,119 @@ class RadioParser:
                 # Plus, I'm not gonna implement something I don't know how to test because then it will be broken for sure
                 # In case you need it for some reason, check out the original implementation of the Ghidra extension by Grant and his team
                 raise NotImplementedError(
-                    f"implementation for the {handler_name} handler is not supported (yet, hopefully)")
+                    f"Implementation for the {handler_name} handler is not supported (yet, hopefully)")
+
+        # Find the names of the tasks
+        tasks_names_offsets = RadioParser.find_tasks_names(main_section)
+
+        if tasks_names_offsets:
+            tasks_names_addresses = []
+            tasks_names_pointer_offsets = []
+
+            for task_name_offset in tasks_names_offsets:
+                task_name_offset += main_header.file_offset
+
+                task_name_translated = binary.translate_mapping_range(BinaryMappingRange(
+                    BinaryMappingInfo(task_name_offset, chunk_handle), 1))
+                # TODO add checks here
+
+                task_name_address = task_name_translated[0].address_range.start
+                task_name_address_bytes = struct.pack("<I", task_name_address)
+
+                address_occurences = [m.start()
+                                      for m in re.finditer(task_name_address_bytes, main_section)]
+
+                tasks_names_addresses.append(task_name_address)
+                tasks_names_pointer_offsets.append(address_occurences)
+
+            first_task_name_pointer_offset = None
+            first_task_name_offset = None
+            first_task_name_address = None
+            task_struct_size = None
+
+            for first_offset in tasks_names_pointer_offsets[0]:
+                for second_offset in tasks_names_pointer_offsets[1]:
+                    difference = second_offset - first_offset
+
+                    expected_third_offset = second_offset + difference
+
+                    if expected_third_offset in tasks_names_pointer_offsets[2]:
+                        first_task_name_pointer_offset = first_offset
+                        first_task_name_offset = tasks_names_offsets[0]
+                        first_task_name_address = tasks_names_addresses[0]
+                        task_struct_size = difference
+                        break
+                else:
+                    continue
+                break
+
+            if first_task_name_pointer_offset:
+                logging.info(
+                    f"Found first task name pointer at offset {first_task_name_pointer_offset:#x}, pointing towards task name at offset {first_task_name_offset:#x} and address {first_task_name_address:#x}")
+                logging.info(
+                    f"Calculated Task Control Block size is {task_struct_size:#x}")
+
+                tasks = RadioParser.find_task_entries(main_section,
+                                                      first_task_name_pointer_offset,
+                                                      first_task_name_offset,
+                                                      first_task_name_address,
+                                                      task_struct_size)
+
+                # Add the easy ones
+                for task in tasks:
+                    binary.add_symbol(BinarySymbolInfo(f"task_name_{task.name}", len(task.name) + 1, BinarySymbolType.DATA,
+                                                       BinaryMappingInfo(task.name_offset + main_header.file_offset, chunk_handle)))
+
+                    binary.add_symbol(BinarySymbolInfo(f"task_nameptr_{task.name}", 4, BinarySymbolType.DATA,
+                                                       BinaryMappingInfo(task.name_pointer_offset + main_header.file_offset, chunk_handle)))
+
+                    binary.add_symbol(BinarySymbolInfo(f"task_entryptr_{task.name}", 4, BinarySymbolType.DATA,
+                                                       BinaryMappingInfo(task.entry_pointer_offset + main_header.file_offset, chunk_handle)))
+
+                # Now handle the entries
+                task_entries = sorted([(t.name, t.entry_address)
+                                      for t in tasks], key=lambda x: x[1])
+
+                entries_code_start, entries_code_end = task_entries[0][1], task_entries[-1][1]
+
+                translated_ranges = binary.translate_address_range(
+                    BinaryAddressRange.from_start_end(entries_code_start, entries_code_end))
+
+                if len(translated_ranges) > 1:
+                    raise NotImplementedError(
+                        f"Handling of fragmented entry ranges is not supported (yet, hopefully)")
+
+                if translated_ranges[0].address_range.start != entries_code_start or translated_ranges[0].address_range.end != entries_code_end:
+                    raise FileParsingError("Task entries are not fully mapped")
+
+                if not translated_ranges[0].mapping:
+                    raise NotImplementedError(
+                        f"Task entries are not mapped to chunk")
+
+                entries_code_offset = translated_ranges[0].mapping.chunk_offset
+                entries_code_chunk = translated_ranges[0].mapping.chunk
+
+                entries_address_to_offset = entries_code_offset - entries_code_start
+
+                for i in range(len(task_entries)):
+                    name, address = task_entries[i]
+                    offset = address + entries_address_to_offset
+
+                    # I tried calculating the size it didn't go well
+                    # size = 0 if i == len(task_entries) - \
+                    #     1 else task_entries[i+1][1] - address
+                    size = 0
+
+                    binary.add_symbol(BinarySymbolInfo(f"task_entry_{name}", size, BinarySymbolType.FUNCTION,
+                                                       BinaryMappingInfo(offset, entries_code_chunk)))
+
+                    # print(name, address, size)
+                    # destination_ranges = binary.translate_address_range(
+                    #     BinaryAddressRange(entry.src, 4))
+
+            else:
+                logging.warning(
+                    "Task Control Blocks could not be found, skipping TCB symbolization")
 
         return binary
 
@@ -645,6 +783,7 @@ class RadioParser:
 
     @staticmethod
     def scatterload_decompress1(data: bytes, decompressed_size: int):
+        return b"ABC"
         result = io.BytesIO()
         idata = iter(data)
 
@@ -693,3 +832,104 @@ class RadioParser:
 
         print('\r', end='')
         return result.getvalue()
+
+    @staticmethod
+    def find_tasks_names(data: bytes):
+        match = RegexDB.TASKS_NAMES.search(data)
+
+        if not match:
+            logging.warning("Unable to find tasks' names")
+            return None
+
+        logging.info(
+            f"Found tasks' strings at offset 0x{match.start():x} in section")
+
+        return match.start(1), match.start(2), match.span()[1]
+
+    @staticmethod
+    def find_task_entries(data: bytes, first_task_name_pointer_offset: int, first_task_name_offset: int, first_task_name_address: int, task_struct_size: int):
+        address_to_offset = first_task_name_offset - first_task_name_address
+
+        # First, we search backwards the actual first TCB
+        while True:
+            candidate_pointer_offset = first_task_name_pointer_offset - task_struct_size
+            name_address = struct.unpack("<I", data[candidate_pointer_offset:
+                                                    candidate_pointer_offset + 4])[0]
+            name_offset = name_address + address_to_offset
+
+            # Ensure the distance seems like a pointer in the ballpark of the pervious string
+            if name_offset >= first_task_name_offset or \
+                    name_offset - first_task_name_offset > RadioParser.TASK_NAME_MAX_LEN:
+                break
+
+            extracted_task_name = data[name_offset:first_task_name_offset]
+            # If it's not null terminated, we're out
+            if extracted_task_name[-1] != 0:
+                break
+
+            # If it contains any non-alphanumeric characters, we're out
+            is_name_string = True
+            for char in extracted_task_name[:-1]:
+                if char not in b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_":
+                    is_name_string = False
+                    break
+            if not is_name_string:
+                break
+
+            # If everything matches out, make the one we checked the first
+            first_task_name_pointer_offset = candidate_pointer_offset
+            first_task_name_offset = name_offset
+            first_task_name_address = name_address
+
+        # Next, we keep parsing TCBs until we run out
+        task_name_pointer_offset = first_task_name_pointer_offset
+        task_name_offset = first_task_name_offset
+        task_name_address = first_task_name_address
+
+        tasks = []
+
+        while True:
+            name_address = struct.unpack("<I", data[task_name_pointer_offset:
+                                                    task_name_pointer_offset + 4])[0]
+
+            # Ensure that the TCB is pointing to the correct address
+            if name_address != task_name_address:
+                break
+
+            # Extract the name
+            extracted_task_name = data[task_name_offset:]
+            task_name_size = 0
+
+            while extracted_task_name[task_name_size] != 0:
+                task_name_size += 1
+
+            if task_name_size > RadioParser.TASK_NAME_MAX_LEN:
+                break
+
+            extracted_task_name = extracted_task_name[:task_name_size]
+            extracted_task_name = extracted_task_name.decode()
+
+            # Extract the entry address
+            task_entry_pointer_offset = task_name_pointer_offset + \
+                RadioParser.TASK_TCB_NAME_TO_ENTRY_OFFSET
+            entry_address = struct.unpack("<I", data[task_entry_pointer_offset:
+                                                     task_entry_pointer_offset + 4])[0]
+
+            # Add the task info to the list
+            task_info = TaskInfo(extracted_task_name,
+                                 task_name_offset,
+                                 task_name_pointer_offset,
+                                 entry_address,
+                                 task_entry_pointer_offset
+                                 )
+            tasks.append(task_info)
+
+            # Update the offsets
+            task_name_pointer_offset = task_name_pointer_offset + task_struct_size
+            task_name_offset += task_name_size + 1
+            task_name_address += task_name_size + 1
+
+        print(f"Found a total of {len(tasks)} tasks with names:", ', '.join(
+            [t.name for t in tasks]))
+
+        return tasks

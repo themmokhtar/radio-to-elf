@@ -8,6 +8,7 @@ from io import BytesIO
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import Iterator
+from enum import Enum
 
 from unpacker import Unpacker
 
@@ -16,6 +17,12 @@ from exceptions import BadFileError, FileParsingError
 BinaryChunkHandle = int
 ZeroChunkHandle = 0
 
+
+class BinarySymbolType(Enum):
+    NONE = 0
+    DATA = 1
+    FUNCTION = 2
+    SECTION = 3
 
 @dataclass
 class BinaryChunkInfo:
@@ -31,6 +38,7 @@ class BinaryChunkInfo:
 class BinarySymbolInfo:
     name: str
     size: int
+    stype: BinarySymbolType
 
     mapping: BinaryMappingInfo
 
@@ -38,7 +46,8 @@ class BinarySymbolInfo:
 @dataclass
 class BinaryAddressSymbolInfo:
     name: str
-    offset: int
+    symbol_suboffset: int
+    stype: BinarySymbolType
 
     address_range: BinaryAddressRange
     mapping: BinaryMappingInfo
@@ -273,12 +282,25 @@ class Binary:
     @property
     def address_symbols(self) -> Iterator[BinaryAddressSymbolInfo]:
         for symbol in self._symbols:
+            size = symbol.size
+
+            zero_size = False
+            if size == 0:
+                size = 1
+                zero_size = True
+
             new_range_infos = self.translate_mapping_range(BinaryMappingRange(
-                symbol.mapping, symbol.size))
+                symbol.mapping, size))
             for new_range_info in new_range_infos:
+                address_range = new_range_info.address_range
+
+                if zero_size:
+                    address_range.size = 0
+
                 yield BinaryAddressSymbolInfo(symbol.name,
                                               new_range_info.mapping.chunk_offset - symbol.mapping.chunk_offset,
-                                              new_range_info.address_range,
+                                              symbol.stype,
+                                              address_range,
                                               new_range_info.mapping)
 
     @property
