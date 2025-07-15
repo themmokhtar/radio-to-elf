@@ -4,6 +4,7 @@ import os
 import logging
 import tarfile
 
+from sys import maxsize
 from io import BytesIO
 from collections import namedtuple
 from dataclasses import dataclass
@@ -85,6 +86,14 @@ class BinaryAddressRange:
     @staticmethod
     def from_start_end(start: int, end: int) -> BinaryAddressRange:
         return BinaryAddressRange(start, end - start)
+
+    # Checks if two address ranges point to the exact same place
+    def __eq__(self, other):
+        return self.address == other.address and self.size == other.size
+
+    # Checks if two address ranges do not point to the exact same place
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
     # Checks if an address lies in the address range
     def __contains__(self, address: int) -> bool:
@@ -258,21 +267,32 @@ class Binary:
 
     @property
     def chunks(self) -> Iterator[Tuple[int, BinaryChunkInfo]]:
-        for chunk_handle, chunk_info in enumerate(self._chunks):
-            if chunk_handle != ZeroChunkHandle:
-                yield chunk_handle, chunk_info
-                continue
+        class Chunks:
+            def __init__(self, binary):
+                self.binary = binary
 
-            # TODO maybe cache this?
-            zero_size = 0
-            for range_info in self.address_space:
-                if not range_info.mapping or range_info.mapping.chunk != ZeroChunkHandle:
-                    continue
+            def __getitem__(self, chunk_handle):
+                chunk_info = self.binary._chunks[chunk_handle]
+            
+                if chunk_handle != ZeroChunkHandle:
+                    return chunk_info
 
-                zero_size = max(
-                    zero_size, range_info.mapping.chunk_offset + range_info.address_range.size)
+                # TODO maybe cache this?
+                zero_size = 0
+                for range_info in self.binary.address_space:
+                    if not range_info.mapping or range_info.mapping.chunk != ZeroChunkHandle:
+                        continue
 
-            yield ZeroChunkHandle, BinaryChunkInfo(chunk_info.name, b"\x00" * zero_size)
+                    zero_size = max(
+                        zero_size, range_info.mapping.chunk_offset + range_info.address_range.size)
+
+                return BinaryChunkInfo(chunk_info.name, b"\x00" * zero_size)
+            
+            def __iter__(self):
+                for chunk_handle in range(len(self.binary._chunks)):
+                    yield chunk_handle, self[chunk_handle]
+
+        return Chunks(self)
 
     @property
     def symbols(self) -> Iterator[BinarySymbolInfo]:
@@ -311,7 +331,7 @@ class Binary:
     def __init__(self):
         # Only the zero chunk
         self._chunks = [BinaryChunkInfo(
-            "zero_initialized", self.ZeroBytes(2 ** 63))]
+            "zero_initialized", self.ZeroBytes(maxsize))]
         self._symbols = []
         self._address_space = []
 

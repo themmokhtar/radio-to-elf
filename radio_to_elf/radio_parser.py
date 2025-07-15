@@ -783,7 +783,6 @@ class RadioParser:
 
     @staticmethod
     def scatterload_decompress1(data: bytes, decompressed_size: int):
-        return b"ABC"
         result = io.BytesIO()
         idata = iter(data)
 
