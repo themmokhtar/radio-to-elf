@@ -104,7 +104,7 @@ class Elfinator:
             data = None
             chunk_offset = 0
             size = range_info.address_range.size
-            section_name = "unintialized"
+            section_name = "zero_initialized" if range_info.mapping else "unintialized"
             if range_info.mapping and range_info.mapping.chunk != ZeroChunkHandle:
                 chunk = binary.chunks[range_info.mapping.chunk]
                 chunk_offset = range_info.mapping.chunk_offset
