@@ -172,7 +172,8 @@ class RegexDB:
 
     # This one is mine
     TASKS_NAMES = re.compile(
-        b"(?P<FIRST>PBM\x00)(?P<SECOND>DS_PBM\x00)"
+        b"((?P<FIRST>(PBM|DS_AS_SAP)\x00)(?P<SECOND>(DS_PBM|DS_CC_SS_SAP)\x00))"
+        # b"((?P<FIRST>(PBM|DS_AS_SAP)\x00)(?P<SECOND>(DS_PBM|DS_CC_SS_SAP)\x00))"
     )
 
 
@@ -353,6 +354,8 @@ class RadioParser:
         boot_header = headers["BOOT"]
         main_header = headers["MAIN"]
 
+        binary.entry = boot_header.load_address
+
         main_section = main_header.slice_section_data(data)
 
         # Parse version strings
@@ -502,8 +505,9 @@ class RadioParser:
                     decompressed_chunk = binary.add_chunk(BinaryChunkInfo(
                         f"scatterload_entry_{index}_decompressed", decompressed))
 
+                    # print("DECOMPRESSED", dst_range)
                     binary.impose_mapping(dst_range,
-                                          BinaryMappingInfo(0, ZeroChunkHandle))
+                                          BinaryMappingInfo(0, decompressed_chunk))
                     continue
 
                 # __scatterload_decompress2 is not implemented because I'm lazy and I'll only implement it if I need it
@@ -843,7 +847,7 @@ class RadioParser:
         logging.info(
             f"Found tasks' strings at offset 0x{match.start():x} in section")
 
-        return match.start(1), match.start(2), match.span()[1]
+        return match.start("FIRST"), match.start("SECOND"), match.span()[1]
 
     @staticmethod
     def find_task_entries(data: bytes, first_task_name_pointer_offset: int, first_task_name_offset: int, first_task_name_address: int, task_struct_size: int):

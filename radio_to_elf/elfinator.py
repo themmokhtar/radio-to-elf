@@ -38,7 +38,7 @@ class Elfinator:
         ehdr.e_type = ET_EXEC
         ehdr.e_machine = EM_ARM
         ehdr.e_version = EV_CURRENT
-        ehdr.e_entry = 0
+        ehdr.e_entry = binary.entry
         ehdr.e_phoff = 0  # Deferred
         ehdr.e_shoff = 0  # Deferred
         ehdr.e_flags = 0

@@ -25,6 +25,7 @@ class BinarySymbolType(Enum):
     FUNCTION = 2
     SECTION = 3
 
+
 @dataclass
 class BinaryChunkInfo:
     name: str
@@ -244,14 +245,14 @@ class Binary:
         def __buffer__(self, flags):
             if self._view is not None:
                 raise RuntimeError("Buffer already held")
-            
+
             self._view = memoryview(b"\x00") * self._size
             return self._view
 
         def __release_buffer__(self, buffer):
             if view is not self._view:
                 raise RuntimeError("Invalid buffer release")
-            
+
             self._view.release()
             self._view = None
 
@@ -273,7 +274,7 @@ class Binary:
 
             def __getitem__(self, chunk_handle):
                 chunk_info = self.binary._chunks[chunk_handle]
-            
+
                 if chunk_handle != ZeroChunkHandle:
                     return chunk_info
 
@@ -287,7 +288,7 @@ class Binary:
                         zero_size, range_info.mapping.chunk_offset + range_info.address_range.size)
 
                 return BinaryChunkInfo(chunk_info.name, b"\x00" * zero_size)
-            
+
             def __iter__(self):
                 for chunk_handle in range(len(self.binary._chunks)):
                     yield chunk_handle, self[chunk_handle]
@@ -334,6 +335,7 @@ class Binary:
             "zero_initialized", self.ZeroBytes(maxsize))]
         self._symbols = []
         self._address_space = []
+        self.entry = 0
 
     def __getitem__(self, key):
         if isinstance(key, int):
@@ -458,6 +460,7 @@ class Binary:
             raise InvalidBinaryInfoError(
                 "Cannot impose address range of negative address")
 
+        # print("IMPOSING", info)
         i = 0
 
         # print(info)
@@ -524,7 +527,9 @@ class Binary:
             # Create the range info accordingly
             if low_range:
                 low_range = BinaryAddressRangeInfo(
-                    low_range, info.mapping, info.permissions)
+                    low_range,
+                    info.mapping >> (low_range.start - mapping_range.start)
+                    if info.mapping else next_range_info.mapping, info.permissions)
 
             if mid_range:
                 mid_range = BinaryAddressRangeInfo(
@@ -549,7 +554,8 @@ class Binary:
             # print(f"NEXT {next_range_info}")
             # print(f"LOW {low_range}")
             # print(f"MID {mid_range}")
-            # print(f"HIGH {high_range}")
+            # print(f"HIGH1 {high_range1}")
+            # print(f"HIGH2 {high_range2}")
 
             # Only use the ranges that actually exist from our boolean range calculation operations
             new_ranges = [low_range, mid_range, high_range1, high_range2]
@@ -558,6 +564,7 @@ class Binary:
             # Insert them reversed at the same index to maintain order
             for new_range in reversed(new_ranges):
                 self._address_space.insert(i, new_range)
+                # print("RESULTED", new_range)
 
             # Jump beyond the ranges we have handled to the next range
             i += len(new_ranges)
